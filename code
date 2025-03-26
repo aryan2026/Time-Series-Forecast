@@ -1,0 +1,80 @@
+### Step 1: Load Necessary Libraries
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.tools.sm_exceptions import ConvergenceWarning
+import warnings
+warnings.simplefilter("ignore", ConvergenceWarning)
+
+### Step 2: Load Dataset
+file_path = 'combined.csv'  # Ensure this file is in your working directory
+columns = ['datetime', 'cityid', 'PM2.5', 'PM10', 'NO2', 'NH3', 'SO2', 'CO', 'OZONE']
+df = pd.read_csv(file_path, usecols=columns)
+
+### Step 3: Convert 'datetime' Column to Date Format
+df['datetime'] = pd.to_datetime(df['datetime'], errors='coerce')
+df.dropna(subset=['datetime'], inplace=True)
+df['year_month'] = df['datetime'].dt.to_period('M')
+
+### Step 4: Handle Missing Values
+pollutant_cols = ['PM2.5', 'PM10', 'NO2', 'NH3', 'SO2', 'CO', 'OZONE']
+df[pollutant_cols] = df[pollutant_cols].fillna(df[pollutant_cols].mean())
+
+### Step 5: Aggregate Pollution Levels per City-Month
+city_pollution = df.groupby(['cityid', 'year_month'])[pollutant_cols].mean().reset_index()
+city_pollution['year_month'] = city_pollution['year_month'].astype(str)
+city_pollution['year_month'] = pd.to_datetime(city_pollution['year_month'])
+
+### Step 6: Ensure Data Variability and Filter Cities
+def check_variability(city_data, pollutant):
+    return city_data[pollutant].nunique() > 1
+
+### Step 7: Forecast Pollution using ARIMA with Error Handling
+def forecast_pollution(city_data, pollutant, forecast_steps=60):
+    try:
+        city_data.set_index('year_month', inplace=True)
+        
+        if not check_variability(city_data, pollutant):  # Skip if constant values
+            return np.array([])
+        
+        model = ARIMA(city_data[pollutant], order=(5, 1, 0))
+        model_fit = model.fit()
+        forecast = model_fit.forecast(steps=forecast_steps)
+        return forecast
+    except Exception as e:
+        print(f"ARIMA failed for city {city_data['cityid'].iloc[0]}: {str(e)}")
+        return np.array([])
+
+### Step 8: Predict Top 10 Most Polluted Cities
+def predict_top_cities(df):
+    future_pollution = {}
+    pollutant = 'PM2.5'  # Key indicator
+    cities = df['cityid'].unique()
+    
+    for city in cities:
+        city_data = df[df['cityid'] == city].copy()
+        print(f"Processing City: {city}, Data Points: {len(city_data)}")  # Debugging output
+        
+        if len(city_data) < 12:
+            print(f"Skipping City {city}, insufficient data")
+            continue
+        
+        forecasted_values = forecast_pollution(city_data, pollutant)
+        if forecasted_values.size == 0:
+            print(f"Skipping City {city}, constant values in PM2.5")
+            continue
+        
+        print(f"Forecasted PM2.5 for City {city}: {forecasted_values[:5]}")  # Debugging output
+        
+        avg_future_pollution = np.mean(forecasted_values)
+        future_pollution[city] = avg_future_pollution
+    
+    top_cities = sorted(future_pollution.items(), key=lambda x: x[1], reverse=True)[:10]
+    return top_cities
+
+### Step 9: Run Analysis
+top_cities = predict_top_cities(city_pollution)
+print("\nTop 10 most polluted cities for the next 5 years:")
+for city, pollution in top_cities:
+    print(f"{city}: {pollution}")
